@@ -1,0 +1,25 @@
+# Render Blueprint — declarative deploy config.
+# Push this repo + render.yaml to GitHub, then "New → Blueprint" on Render
+# and point it at the repo. Render reads this file and creates the service.
+
+services:
+  - type: web
+    name: musicapp-backend
+    runtime: docker
+    region: singapore             # change to your nearest region
+    plan: free                    # 750h/month, sleeps after 15min idle
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      # You'll set these in the Render dashboard (they're secrets, not in git)
+      - key: DATABASE_URL
+        sync: false               # "sync: false" means manual entry in dashboard
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true       # Render auto-generates a strong random value
+      - key: PORT
+        value: "8000"

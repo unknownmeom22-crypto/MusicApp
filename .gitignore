@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+oauth.json
+browser.json
+*.log
+*.tmp
+data/
