@@ -9,6 +9,7 @@ so we use a TTL.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -22,21 +23,56 @@ from .config import settings
 _cache: dict[str, tuple[Any, ...]] = {}
 
 
-_YDL_OPTS = {
-    "quiet": True,
-    "no_warnings": True,
-    "skip_download": True,
-    # Prefer audio-only; fall back to any best format. yt-dlp picks the best
-    # available audio across all containers (m4a, webm/opus, etc).
-    "format": "bestaudio/best",
-    "extract_flat": False,
-    "noplaylist": True,
-}
+def _cookies_path() -> str | None:
+    """Pick a usable cookies file path, or None if we have to fly blind."""
+    # 1. Explicit override via settings/env
+    if settings.yt_cookies_file and os.path.exists(settings.yt_cookies_file):
+        return settings.yt_cookies_file
+    # 2. Render Secret Files default mount point
+    p = "/etc/secrets/cookies.txt"
+    if os.path.exists(p):
+        return p
+    # 3. Local convention
+    p = "cookies.txt"
+    if os.path.exists(p):
+        return p
+    return None
+
+
+def _ydl_opts(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "format": "bestaudio/best",
+        "extract_flat": False,
+        "noplaylist": True,
+        # Force alternative YouTube player clients that don't trigger the
+        # "confirm you're not a bot" wall on datacenter IPs (Render, Fly, etc).
+        # `mweb` (mobile web) + `tv_embedded` (Smart-TV embed) are the most
+        # reliable unauthenticated bypasses as of late 2025.
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["tv_embedded", "mweb", "ios"],
+            },
+        },
+    }
+    cookies = _cookies_path()
+    if cookies:
+        opts["cookiefile"] = cookies
+    if extra:
+        opts.update(extra)
+    return opts
+
+
+# Kept for backward-compat with any other module that imported it
+_YDL_OPTS = _ydl_opts()
 
 
 def _extract(video_id: str) -> dict[str, Any]:
     url = f"https://music.youtube.com/watch?v={video_id}"
-    with YoutubeDL(_YDL_OPTS) as ydl:
+    # Rebuild opts each call so cookies file existence is re-checked (cheap).
+    with YoutubeDL(_ydl_opts()) as ydl:
         return ydl.extract_info(url, download=False)
 
 

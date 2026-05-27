@@ -24,10 +24,24 @@ from typing import Any, Iterator
 import httpx
 from yt_dlp import YoutubeDL
 
+from . import stream as _stream
+
 
 @lru_cache(maxsize=1)
 def _has_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
+
+
+_PLAYER_CLIENTS = ["tv_embedded", "mweb", "ios"]
+
+
+def _with_cookies(opts: dict[str, Any]) -> dict[str, Any]:
+    cookies = _stream._cookies_path()
+    if cookies:
+        opts.setdefault("cookiefile", cookies)
+    # Same bot-block bypass as stream.py uses.
+    opts.setdefault("extractor_args", {"youtube": {"player_client": _PLAYER_CLIENTS}})
+    return opts
 
 
 # Common headers — YT will 403 some requests without a real-looking UA.
@@ -53,13 +67,13 @@ def _safe_filename(name: str, ext: str) -> str:
 
 def get_audio_info(video_id: str) -> dict[str, Any]:
     """Return {'url', 'ext', 'title', 'content_type'} for the best audio stream."""
-    opts = {
+    opts = _with_cookies({
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "format": "bestaudio/best",
         "noplaylist": True,
-    }
+    })
     url = f"https://music.youtube.com/watch?v={video_id}"
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -113,7 +127,7 @@ def download_video_to_temp(video_id: str) -> tuple[Path, str]:
     # Without ffmpeg: single-file `best` only (~720p max — YT splits higher res).
     if _has_ffmpeg():
         fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
-        opts = {
+        opts = _with_cookies({
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
@@ -121,16 +135,16 @@ def download_video_to_temp(video_id: str) -> tuple[Path, str]:
             "merge_output_format": "mp4",
             "outtmpl": outtmpl,
             "restrictfilenames": False,
-        }
+        })
     else:
-        opts = {
+        opts = _with_cookies({
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "format": "best[ext=mp4]/best",
             "outtmpl": outtmpl,
             "restrictfilenames": False,
-        }
+        })
     url = f"https://music.youtube.com/watch?v={video_id}"
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)

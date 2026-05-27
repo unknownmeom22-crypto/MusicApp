@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     # ----- Stream cache TTL (yt-dlp URLs expire after ~6h) -----
     stream_cache_ttl: int = 60 * 60 * 5
 
+    # ----- yt-dlp cookies (defeats YouTube's "confirm you're not a bot" block
+    # that hits any cloud-VM IP). Export a cookies.txt from a browser logged
+    # into youtube.com and either put it at this path or mount it via Render's
+    # Secret Files feature at /etc/secrets/cookies.txt. -----
+    yt_cookies_file: str = ""
+
     # ----- Multi-user auth -----
     # JWT secret. Override via .env; otherwise a random one is generated per
     # process (which invalidates all sessions on restart — fine for dev, set
