@@ -2,6 +2,10 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 ytmusicapi==1.12.0
 yt-dlp>=2026.3.17
+# PO Token provider plugin — yt-dlp auto-uses it to attach proof-of-origin
+# tokens (from the provider server the app launches on startup), restoring
+# YouTube formats that are withheld from datacenter IPs.
+bgutil-ytdlp-pot-provider>=1.1.0
 pydantic-settings==2.6.1
 httpx==0.28.1
 bcrypt==4.2.1

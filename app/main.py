@@ -20,6 +20,8 @@ User routes (require Bearer token) — all data stored locally per account:
 
 from __future__ import annotations
 
+import os
+import subprocess
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -41,10 +43,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_pot_provider_proc: subprocess.Popen | None = None
+
+
+def _start_pot_provider() -> None:
+    """Launch the bundled bgutil PO Token provider HTTP server (127.0.0.1:4416)
+    so yt-dlp's plugin can fetch tokens. Done here (not via the container CMD)
+    so it runs regardless of how uvicorn is started. No-op when the provider
+    isn't bundled (e.g. local dev), so it's harmless everywhere."""
+    global _pot_provider_proc
+    cwd = os.environ.get("BGUTIL_PROVIDER_CWD", "/app")
+    main_js = os.path.join(cwd, "build", "main.js")
+    if not os.path.exists(main_js):
+        print(f"[pot] provider not bundled ({main_js} missing) — skipping")
+        return
+    try:
+        _pot_provider_proc = subprocess.Popen(
+            ["node", "build/main.js"],
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"[pot] launched provider (pid {_pot_provider_proc.pid}) on 127.0.0.1:4416")
+    except Exception as e:  # noqa: BLE001
+        print(f"[pot] failed to launch provider: {e}")
+
 
 @app.on_event("startup")
 def _startup() -> None:
     db.init()
+    _start_pot_provider()
 
 
 # ---------- Meta ----------
