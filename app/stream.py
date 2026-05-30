@@ -59,7 +59,27 @@ def _cookies_path() -> str | None:
         return src
 
 
-def _ydl_opts(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+# Which YouTube player clients to try, in order, until one yields a playable
+# audio URL. Different clients return formats differently depending on IP and
+# auth: on residential IPs `default` is usually enough, but on datacenter IPs
+# (Render) — even WITH cookies — some clients return SABR/no-URL formats and
+# fail with "Requested format is not available", while a different client still
+# gives a direct URL. We can't know which from here, so we try several and take
+# the first that works (the result is cached, so the cost is paid once).
+_CLIENT_STRATEGIES: list[list[str]] = [
+    ["default"],
+    ["android_vr", "tv_embedded"],
+    ["ios"],
+    ["web_safari", "mweb"],
+    ["tv"],
+    ["android", "web"],
+]
+
+
+def _ydl_opts(
+    player_client: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
@@ -67,15 +87,9 @@ def _ydl_opts(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "format": "bestaudio/best",
         "extract_flat": False,
         "noplaylist": True,
-        # Pick YouTube player clients that still return audio formats without
-        # auth. YouTube periodically breaks specific clients — as of 2026-05,
-        # `mweb`/`ios`/`web_safari` return "Requested format is not available",
-        # while `default`, `android_vr`, and `tv_embedded` (Smart-TV embed)
-        # still resolve. Keeping several gives fallbacks if one breaks again.
-        # If all of these get blocked, supply a cookies.txt (see _cookies_path).
         "extractor_args": {
             "youtube": {
-                "player_client": ["default", "android_vr", "tv_embedded"],
+                "player_client": player_client or ["default", "android_vr", "tv_embedded"],
             },
         },
     }
@@ -92,10 +106,20 @@ _YDL_OPTS = _ydl_opts()
 
 
 def _extract(video_id: str) -> dict[str, Any]:
+    """Resolve playable info, trying each client strategy until one returns a
+    usable URL. Raises the last error if every strategy fails."""
     url = f"https://music.youtube.com/watch?v={video_id}"
-    # Rebuild opts each call so cookies file existence is re-checked (cheap).
-    with YoutubeDL(_ydl_opts()) as ydl:
-        return ydl.extract_info(url, download=False)
+    last_err: Exception | None = None
+    for clients in _CLIENT_STRATEGIES:
+        try:
+            with YoutubeDL(_ydl_opts(player_client=clients)) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if info and info.get("url"):
+                return info
+            last_err = RuntimeError(f"no URL from clients={clients}")
+        except Exception as e:  # noqa: BLE001 — try the next client strategy
+            last_err = e
+    raise last_err or RuntimeError(f"No playable format for {video_id}")
 
 
 _CACHE_FIELDS = ("url", "content_type", "duration", "title", "codec", "bitrate_kbps")
