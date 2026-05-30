@@ -13,8 +13,9 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Any
+from typing import Any, Iterator
 
+import httpx
 from yt_dlp import YoutubeDL
 
 from .config import settings
@@ -96,6 +97,8 @@ def _ydl_opts(
     cookies = _cookies_path()
     if cookies:
         opts["cookiefile"] = cookies
+    if settings.yt_proxy:
+        opts["proxy"] = settings.yt_proxy
     if extra:
         opts.update(extra)
     return opts
@@ -122,36 +125,69 @@ def _extract(video_id: str) -> dict[str, Any]:
     raise last_err or RuntimeError(f"No playable format for {video_id}")
 
 
-def debug_formats(video_id: str) -> dict[str, Any]:
-    """Diagnostic: for each client strategy, list the AUDIO formats yt-dlp sees
-    and whether they carry a direct URL. process=False so format-selection
-    errors don't hide the list. Tells us if this IP gets URL-less/SABR formats."""
-    url = f"https://music.youtube.com/watch?v={video_id}"
-    out: dict[str, Any] = {"has_cookies": bool(_cookies_source())}
-    for clients in _CLIENT_STRATEGIES:
-        key = ",".join(clients)
-        try:
-            opts = _ydl_opts(player_client=clients)
-            opts.pop("format", None)
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False, process=False)
-            fmts = list((info or {}).get("formats") or [])
-            audio = [
-                {
-                    "id": f.get("format_id"),
-                    "ext": f.get("ext"),
-                    "acodec": f.get("acodec"),
-                    "abr": f.get("abr"),
-                    "proto": f.get("protocol"),
-                    "has_url": bool(f.get("url")),
-                }
-                for f in fmts
-                if f.get("acodec") and f.get("acodec") != "none"
-            ]
-            out[key] = {"n_total": len(fmts), "n_audio": len(audio), "audio": audio[:8]}
-        except Exception as e:  # noqa: BLE001
-            out[key] = {"error": str(e)[:240]}
-    return out
+# ---------- Audio proxy ----------
+# Resolved googlevideo URLs are locked to the IP that fetched them. When we
+# extract through a residential proxy, the URL is bound to the proxy's IP — so
+# the phone can't fetch it directly. Instead we stream the bytes through the
+# backend, fetching upstream through the SAME proxy, with Range support so the
+# client can seek.
+
+_PROXY_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept": "*/*",
+}
+
+# Headers worth forwarding from the upstream response back to the client.
+_PASSTHROUGH_HEADERS = ("content-type", "content-length", "content-range", "accept-ranges")
+
+
+def proxy_audio(
+    video_id: str,
+    range_header: str | None = None,
+) -> tuple[int, dict[str, str], Iterator[bytes]]:
+    """Open the resolved audio stream THROUGH the residential proxy and return
+    (status_code, response_headers, byte_iterator) for a StreamingResponse.
+    Retries once with a fresh URL if the upstream 403s (expired/IP mismatch)."""
+    for attempt in range(2):
+        info = resolve(video_id, force_refresh=(attempt == 1))
+        upstream = info["url"]
+
+        req_headers = dict(_PROXY_FETCH_HEADERS)
+        if range_header:
+            req_headers["Range"] = range_header
+
+        client = httpx.Client(
+            proxy=settings.yt_proxy or None,
+            timeout=httpx.Timeout(60.0, read=300.0),
+            follow_redirects=True,
+        )
+        resp = client.send(client.build_request("GET", upstream, headers=req_headers), stream=True)
+
+        if resp.status_code in (403, 410) and attempt == 0:
+            # Likely an expired/IP-locked URL — drop it and re-resolve once.
+            resp.close()
+            client.close()
+            invalidate(video_id)
+            continue
+
+        headers = {k: v for k, v in resp.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
+        headers.setdefault("accept-ranges", "bytes")
+
+        def _body() -> Iterator[bytes]:
+            try:
+                for chunk in resp.iter_bytes(chunk_size=64 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                resp.close()
+                client.close()
+
+        return resp.status_code, headers, _body()
+
+    raise RuntimeError(f"Audio upstream kept failing for {video_id}")
 
 
 _CACHE_FIELDS = ("url", "content_type", "duration", "title", "codec", "bitrate_kbps")

@@ -20,11 +20,9 @@ User routes (require Bearer token) — all data stored locally per account:
 
 from __future__ import annotations
 
-import os
-import subprocess
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
@@ -43,36 +41,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_pot_provider_proc: subprocess.Popen | None = None
-
-
-def _start_pot_provider() -> None:
-    """Launch the bundled bgutil PO Token provider HTTP server (127.0.0.1:4416)
-    so yt-dlp's plugin can fetch tokens. Done here (not via the container CMD)
-    so it runs regardless of how uvicorn is started. No-op when the provider
-    isn't bundled (e.g. local dev), so it's harmless everywhere."""
-    global _pot_provider_proc
-    cwd = os.environ.get("BGUTIL_PROVIDER_CWD", "/app")
-    main_js = os.path.join(cwd, "build", "main.js")
-    if not os.path.exists(main_js):
-        print(f"[pot] provider not bundled ({main_js} missing) — skipping")
-        return
-    try:
-        _pot_provider_proc = subprocess.Popen(
-            ["node", "build/main.js"],
-            cwd=cwd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        print(f"[pot] launched provider (pid {_pot_provider_proc.pid}) on 127.0.0.1:4416")
-    except Exception as e:  # noqa: BLE001
-        print(f"[pot] failed to launch provider: {e}")
-
-
 @app.on_event("startup")
 def _startup() -> None:
     db.init()
-    _start_pot_provider()
 
 
 # ---------- Meta ----------
@@ -358,11 +329,16 @@ def stream_info(video_id: str, fresh: bool = False) -> dict:
         raise HTTPException(status_code=502, detail=f"Stream resolution failed: {e}") from e
 
 
-@app.get("/debug/formats/{video_id}")
-def debug_formats(video_id: str) -> dict:
-    """TEMP diagnostic — lists the audio formats each client strategy sees on
-    this server's IP (helps debug datacenter SABR/format issues)."""
-    return stream.debug_formats(video_id)
+@app.get("/stream/{video_id}/audio")
+def stream_audio_proxy(video_id: str, request: Request):
+    """Proxy the audio bytes through the backend (and the residential proxy) so
+    the IP that fetched the URL matches the one playing it. Supports Range so
+    the client can seek. This is what the app plays from."""
+    try:
+        status, headers, body = stream.proxy_audio(video_id, request.headers.get("range"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Audio proxy failed: {e}") from e
+    return StreamingResponse(body, status_code=status, headers=headers)
 
 
 @app.get("/stream/{video_id}/redirect")

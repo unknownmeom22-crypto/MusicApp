@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # Secret Files feature at /etc/secrets/cookies.txt. -----
     yt_cookies_file: str = ""
 
+    # ----- Residential proxy (required for playback from datacenter hosts) -----
+    # YouTube withholds audio formats from datacenter IPs (Render). Route yt-dlp
+    # extraction AND the audio proxy through a residential proxy so YouTube sees
+    # a residential IP. Format: http://user:pass@host:port  (e.g. Webshare).
+    yt_proxy: str = ""
+
     # ----- Multi-user auth -----
     # JWT secret. Override via .env; otherwise a random one is generated per
     # process (which invalidates all sessions on restart — fine for dev, set
