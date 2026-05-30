@@ -1,13 +1,12 @@
-"""One-time auth setup for ytmusicapi.
+"""Optional one-time setup of the GLOBAL guest auth file for ytmusicapi.
 
-Two paths:
-  1. OAuth (recommended) — log in via Google's device-flow OAuth.
-     Requires a Google OAuth Client ID/Secret (TV/limited-input type).
-     See: https://ytmusicapi.readthedocs.io/en/stable/setup/oauth.html
+This is entirely optional — the backend works in plain guest mode without it.
+Supplying a browser-auth file can improve the quality of public search/browse
+results. It is NOT per-user auth: there is no YouTube account linking anymore.
 
-  2. Browser auth — paste request headers from a logged-in YouTube Music browser tab.
-     No Google Cloud setup needed. The cookies typically last for months.
-     See: https://ytmusicapi.readthedocs.io/en/stable/setup/browser.html
+Browser auth — paste request headers from a logged-in YouTube Music browser tab.
+No Google Cloud setup needed. The cookies typically last for months.
+See: https://ytmusicapi.readthedocs.io/en/stable/setup/browser.html
 
 Run from the `backend/` directory:
     python scripts/setup_auth.py
@@ -15,26 +14,12 @@ Run from the `backend/` directory:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from ytmusicapi import YTMusic
-from ytmusicapi.setup import setup, setup_oauth
+from ytmusicapi.setup import setup
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-
-
-def do_oauth() -> None:
-    print()
-    print("=== OAuth setup ===")
-    print("You need a Google OAuth Client ID + Secret of type 'TV and Limited Input'.")
-    print("Guide: https://ytmusicapi.readthedocs.io/en/stable/setup/oauth.html")
-    print()
-    client_id = input("Client ID: ").strip()
-    client_secret = input("Client Secret: ").strip()
-    out = BACKEND_DIR / "oauth.json"
-    setup_oauth(filepath=str(out), client_id=client_id, client_secret=client_secret, open_browser=True)
-    print(f"\nSaved {out}.  Set AUTH_TYPE=oauth in your .env (default).")
 
 
 def do_browser() -> None:
@@ -75,34 +60,23 @@ def do_browser() -> None:
 
     out = BACKEND_DIR / "browser.json"
     setup(filepath=str(out), headers_raw=headers_raw)
-    print(f"\nSaved {out}.  Set AUTH_FILE=browser.json and AUTH_TYPE=browser in .env.")
+    print(f"\nSaved {out}.  It will be picked up automatically (AUTH_FILE=browser.json).")
 
 
 def verify(path: Path) -> None:
     print(f"\nVerifying {path.name}...")
     yt = YTMusic(str(path))
     try:
-        playlists = yt.get_library_playlists(limit=1)
-        print(f"OK — found {len(playlists)} library playlist(s).  You're authed!")
+        results = yt.search("test", limit=1)
+        print(f"OK — search returned {len(results)} result(s).  Guest auth works!")
     except Exception as e:  # noqa: BLE001
-        print(f"WARN — could not fetch library playlists: {e}")
-        print("Auth file was written but the account may not be configured for YT Music.")
+        print(f"WARN — a test search failed: {e}")
+        print("Auth file was written but may be invalid.")
 
 
 def main() -> None:
-    print("Which auth method?")
-    print("  1) OAuth  (needs Google Cloud OAuth client; cleaner long-term)")
-    print("  2) Browser cookies  (easier; just paste request headers)")
-    choice = input("Choice [1/2]: ").strip()
-    if choice == "1":
-        do_oauth()
-        verify(BACKEND_DIR / "oauth.json")
-    elif choice == "2":
-        do_browser()
-        verify(BACKEND_DIR / "browser.json")
-    else:
-        print("Unknown choice.")
-        sys.exit(1)
+    do_browser()
+    verify(BACKEND_DIR / "browser.json")
 
 
 if __name__ == "__main__":

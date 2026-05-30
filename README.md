@@ -1,6 +1,8 @@
 # MusicApp backend
 
-FastAPI server exposing YouTube Music search, library, and audio streaming.
+FastAPI server exposing YouTube Music search, audio streaming, and per-user
+accounts (liked songs, playlists, history) stored locally in Postgres. There is
+no YouTube account linking.
 
 ## Setup
 
@@ -10,22 +12,21 @@ py -3.14 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 ```
 
-## (Optional) Log in to your YouTube Music account
+Set `DATABASE_URL` and `JWT_SECRET` in `.env` (see `.env.example`). Users sign
+up / log in from the app; their personal data is keyed to their account.
 
-Without this, search and public endpoints work but `/library/*` returns 401.
+## (Optional) Global guest auth for better search
+
+Entirely optional and **not** per-user — it's a single shared file used only to
+improve public search/browse results. The app runs fine in plain guest mode
+without it.
 
 ```powershell
 .venv\Scripts\python scripts\setup_auth.py
 ```
 
-Pick option 2 (Browser cookies) — it's easier than OAuth. Follow the prompts.
-The script writes `browser.json` (or `oauth.json`) next to this README.
-
-If you used the browser method, also edit `.env`:
-```
-AUTH_FILE=browser.json
-AUTH_TYPE=browser
-```
+Follow the prompts (paste request headers from a logged-in music.youtube.com
+tab). The script writes `browser.json`, which is picked up automatically.
 
 ## Run
 
@@ -43,19 +44,20 @@ needs to reach this server over the LAN.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/health` | `{ok, authed}` |
+| GET | `/health` | `{ok, guest_authed}` |
+| POST | `/auth/signup`, `/auth/login` | returns a JWT |
+| GET | `/me` | current account (Bearer token) |
 | GET | `/search?q=...&filter=songs&limit=20` | mixed or filtered |
 | GET | `/song/{videoId}` | song metadata |
 | GET | `/album/{browseId}` | album metadata |
 | GET | `/artist/{channelId}` | artist page |
-| GET | `/playlist/{playlistId}` | playlist with tracks |
+| GET | `/playlist/{playlistId}` | public playlist with tracks |
 | GET | `/lyrics/{videoId}` | lyrics (when available) |
-| GET | `/home` | YT Music home shelves (better when authed) |
+| GET | `/home` | guest home shelves |
 | GET | `/charts?country=ZZ` | charts |
-| GET | `/library/playlists` | **auth required** |
-| GET | `/library/liked` | **auth required** |
-| GET | `/library/history` | **auth required** |
-| POST | `/song/{id}/rate?rating=LIKE` | **auth required** |
+| GET | `/library/liked` · `PUT`/`DELETE` `/me/likes/{videoId}` | liked songs — **auth** |
+| GET/POST | `/me/playlists`, `/me/playlists/{id}` (+ `/items/{videoId}`) | playlists — **auth** |
+| GET | `/me/history` · `POST` `/me/history/{videoId}` | recently played — **auth** |
 | GET | `/stream/{videoId}` | `{url, content_type, duration}` |
 | GET | `/stream/{videoId}/redirect` | 302 to the audio URL |
 

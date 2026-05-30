@@ -1,9 +1,13 @@
 """Postgres connection pool + schema migrations.
 
-Uses psycopg3 with a small pool. The schema is two tables:
+Uses psycopg3 with a small pool. All user data lives locally — there is no
+YouTube account linking. The schema:
 
-    users      — email/password accounts
-    yt_auth    — per-user YouTube Music auth blob (JSON), 1:1 with users
+    users           — email/password accounts
+    liked_songs     — per-user liked tracks
+    playlists       — per-user playlists
+    playlist_items  — tracks inside a playlist
+    play_history    — per-user recently-played tracks
 """
 
 from __future__ import annotations
@@ -26,11 +30,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS yt_auth (
-    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    payload    JSONB NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+-- Legacy: YouTube account linking has been removed. Drop the old token table.
+DROP TABLE IF EXISTS yt_auth;
 
 CREATE TABLE IF NOT EXISTS liked_songs (
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -44,6 +45,42 @@ CREATE TABLE IF NOT EXISTS liked_songs (
 
 CREATE INDEX IF NOT EXISTS liked_songs_user_added_idx
     ON liked_songs (user_id, added_at DESC);
+
+CREATE TABLE IF NOT EXISTS playlists (
+    id         SERIAL PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS playlists_user_idx
+    ON playlists (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS playlist_items (
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    video_id    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    artists     TEXT NOT NULL DEFAULT '',
+    thumb_url   TEXT NOT NULL DEFAULT '',
+    added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (playlist_id, video_id)
+);
+
+CREATE INDEX IF NOT EXISTS playlist_items_pl_added_idx
+    ON playlist_items (playlist_id, added_at DESC);
+
+CREATE TABLE IF NOT EXISTS play_history (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    video_id   TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    artists    TEXT NOT NULL DEFAULT '',
+    thumb_url  TEXT NOT NULL DEFAULT '',
+    played_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, video_id)
+);
+
+CREATE INDEX IF NOT EXISTS play_history_user_played_idx
+    ON play_history (user_id, played_at DESC);
 """
 
 

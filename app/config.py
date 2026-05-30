@@ -6,12 +6,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # ----- legacy single-tenant YT Music auth (used as guest fallback) -----
-    # Path to a global ytmusicapi auth file used when no user is signed in.
-    # If the file does not exist, the backend runs in "guest" mode (public
-    # search only, no personal library).
+    # ----- Optional global guest auth (improves public results) -----
+    # Path to a global ytmusicapi browser-auth file used for all public
+    # metadata calls. Entirely optional — if the file is absent, the backend
+    # runs in plain guest mode (public search/browse), which is all that's
+    # needed since there is no per-user YouTube linking.
     auth_file: str = "browser.json"
-    auth_type: str = "browser"  # "oauth" or "browser"
 
     # ----- CORS -----
     cors_origins: list[str] = ["*"]
@@ -38,12 +38,6 @@ class Settings(BaseSettings):
     # Render Postgres, etc.). For local-only dev you could point at a local
     # postgres, or leave it blank to skip DB init (won't be able to log in).
     database_url: str = ""
-
-    # ----- Google OAuth (Sign in with Google → YT Music) -----
-    # "TVs and Limited Input devices" OAuth Client. Created once in
-    # https://console.cloud.google.com/. Until set, /me/yt-oauth/* returns 503.
-    google_client_id: str = ""
-    google_client_secret: str = ""
 
 
 settings = Settings()

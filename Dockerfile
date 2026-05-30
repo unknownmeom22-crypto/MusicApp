@@ -3,8 +3,6 @@
 # Build:  docker build -t musicapp-backend .
 # Run:    docker run -p 8000:8000 \
 #           -e DATABASE_URL=postgresql://... \
-#           -e GOOGLE_CLIENT_ID=... \
-#           -e GOOGLE_CLIENT_SECRET=... \
 #           -e JWT_SECRET=... \
 #           musicapp-backend
 
@@ -37,6 +35,6 @@ ENV PORT=8000
 EXPOSE 8000
 
 # --host 0.0.0.0 so the container is reachable; --workers 1 because our
-# in-process caches (_user_clients, stream URL cache, OAuth _pending) aren't
-# shared across workers. For >10 users, replace these with Redis.
+# in-process stream-URL cache isn't shared across workers. For >10 users,
+# replace it with Redis.
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]

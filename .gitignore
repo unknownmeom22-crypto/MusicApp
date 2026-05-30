@@ -2,7 +2,6 @@
 __pycache__/
 *.pyc
 .env
-oauth.json
 browser.json
 *.log
 *.tmp

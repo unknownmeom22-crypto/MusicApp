@@ -1,26 +1,19 @@
 """Thin wrapper around ytmusicapi.
 
-Two client tiers:
-  - Global guest client (for public endpoints — search, home, charts, etc).
-  - Per-user clients backed by tokens stored in the `yt_auth` Postgres table.
+A single global guest client serves all public metadata endpoints (search,
+home, charts, song/album/artist/playlist lookups). There is no per-user
+YouTube auth — all user data (likes, playlists, history) lives in Postgres.
 
-YT auth payloads live as JSONB rows in Postgres (not on disk) so they survive
-Render's ephemeral filesystem.
+An optional global auth file (browser.json) can be supplied to improve guest
+results, but it is not required.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from functools import lru_cache
-from typing import Any
 
-from fastapi import HTTPException
-from psycopg.types.json import Json
 from ytmusicapi import YTMusic
-from ytmusicapi.setup import setup as ytm_setup
 
-from . import db
 from .config import auth_path
 
 
@@ -68,125 +61,20 @@ def get_charts(country: str = "ZZ") -> dict:
 
 
 def get_lyrics(video_id: str) -> dict | None:
+    """Best-effort lyrics. ytmusicapi can raise (e.g. KeyError: 'endpoint') when
+    YouTube changes a watch-playlist payload or a video simply has no lyrics
+    tab — treat any failure as "no lyrics" rather than bubbling up a 500."""
     yt = client()
-    watch = yt.get_watch_playlist(video_id)
-    browse_id = watch.get("lyrics")
-    if not browse_id:
+    try:
+        watch = yt.get_watch_playlist(video_id)
+        browse_id = watch.get("lyrics")
+        if not browse_id:
+            return None
+        return yt.get_lyrics(browse_id)
+    except Exception:
         return None
-    return yt.get_lyrics(browse_id)
 
 
 def suggest(q: str) -> list[str]:
     """YouTube's autocomplete suggestions for the search input."""
     return client().get_search_suggestions(q)
-
-
-# ---------- Per-user storage ----------
-
-_user_clients: dict[int, YTMusic] = {}
-
-
-def get_user_yt_payload(user_id: int) -> dict | None:
-    """Return the user's saved YT auth JSON, or None if not linked."""
-    with db.conn() as c:
-        row = c.execute(
-            "SELECT payload FROM yt_auth WHERE user_id = %s", (user_id,)
-        ).fetchone()
-    return row["payload"] if row else None
-
-
-def save_user_yt_payload(user_id: int, payload: dict) -> None:
-    """Upsert the user's YT auth blob and invalidate any cached client."""
-    with db.conn() as c:
-        c.execute(
-            """
-            INSERT INTO yt_auth (user_id, payload, updated_at)
-                 VALUES (%s, %s, NOW())
-            ON CONFLICT (user_id)
-              DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
-            """,
-            (user_id, Json(payload)),
-        )
-    _user_clients.pop(user_id, None)
-
-
-def delete_user_yt_auth(user_id: int) -> None:
-    with db.conn() as c:
-        c.execute("DELETE FROM yt_auth WHERE user_id = %s", (user_id,))
-    _user_clients.pop(user_id, None)
-
-
-def user_has_youtube(user_id: int) -> bool:
-    return get_user_yt_payload(user_id) is not None
-
-
-def client_for_user(user_id: int) -> YTMusic:
-    """Return the per-user YTMusic client. 412 if not linked."""
-    if user_id in _user_clients:
-        return _user_clients[user_id]
-    payload = get_user_yt_payload(user_id)
-    if payload is None:
-        raise HTTPException(
-            status_code=412,
-            detail=(
-                "YouTube Music not linked for this account. "
-                "POST /me/yt-oauth/start to begin the Sign-in-with-Google flow."
-            ),
-        )
-    # OAuth token vs browser headers: detect by shape
-    if "access_token" in payload and "refresh_token" in payload:
-        from . import oauth as ytoauth
-        yt = YTMusic(payload, oauth_credentials=ytoauth.get_credentials())
-    else:
-        # Browser-headers format — passing a dict to YTMusic also works.
-        yt = YTMusic(payload)
-    _user_clients[user_id] = yt
-    return yt
-
-
-# ---------- Browser-headers (cURL) auth — converts to JSON blob ----------
-
-def save_user_youtube_browser_auth(user_id: int, raw: str) -> None:
-    """Parse a cURL/headers string and save the resulting ytmusicapi headers
-    dict into Postgres. (Legacy fallback — OAuth is preferred.)"""
-    if "-H " in raw or "-b " in raw:
-        headers = re.findall(r"-H '([^']+)'", raw)
-        m = re.search(r"-b '([^']+)'", raw)
-        if m:
-            headers.append("cookie: " + m.group(1))
-        headers_raw = "\n".join(headers)
-    else:
-        headers_raw = raw
-
-    # ytm_setup writes a file — we have it write to a temp path and then read
-    # the JSON back to store in DB.
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as f:
-        tmp_path = f.name
-    try:
-        ytm_setup(filepath=tmp_path, headers_raw=headers_raw)
-        with open(tmp_path, encoding="utf-8") as f:
-            payload = json.load(f)
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not parse the cURL/headers you provided: {e}",
-        ) from e
-    finally:
-        try:
-            import os
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-
-    save_user_yt_payload(user_id, payload)
-
-    # Sanity check
-    try:
-        YTMusic(payload).get_library_playlists(limit=1)
-    except Exception as e:
-        delete_user_yt_auth(user_id)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Auth saved but a test call failed — cookies may be invalid: {e}",
-        ) from e

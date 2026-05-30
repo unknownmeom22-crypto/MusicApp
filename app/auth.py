@@ -41,7 +41,6 @@ class TokenOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     email: str
-    has_youtube: bool
 
 
 # ---------- Hashing ----------

@@ -47,13 +47,15 @@ def _ydl_opts(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "format": "bestaudio/best",
         "extract_flat": False,
         "noplaylist": True,
-        # Force alternative YouTube player clients that don't trigger the
-        # "confirm you're not a bot" wall on datacenter IPs (Render, Fly, etc).
-        # `mweb` (mobile web) + `tv_embedded` (Smart-TV embed) are the most
-        # reliable unauthenticated bypasses as of late 2025.
+        # Pick YouTube player clients that still return audio formats without
+        # auth. YouTube periodically breaks specific clients — as of 2026-05,
+        # `mweb`/`ios`/`web_safari` return "Requested format is not available",
+        # while `default`, `android_vr`, and `tv_embedded` (Smart-TV embed)
+        # still resolve. Keeping several gives fallbacks if one breaks again.
+        # If all of these get blocked, supply a cookies.txt (see _cookies_path).
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv_embedded", "mweb", "ios"],
+                "player_client": ["default", "android_vr", "tv_embedded"],
             },
         },
     }

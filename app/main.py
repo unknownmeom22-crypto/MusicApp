@@ -10,24 +10,25 @@ Public routes (no auth needed):
 Auth routes:
     POST /auth/signup, POST /auth/login
 
-User routes (require Bearer token):
-    GET  /me                — current user info
-    POST /me/link-youtube   — paste cURL to enable library features
-    GET  /library/*         — per-user library
-    POST /song/{id}/rate    — per-user rating
+User routes (require Bearer token) — all data stored locally per account:
+    GET  /me                  — current user info
+    GET  /library/liked       — liked songs
+    *    /me/likes/*          — like / unlike / status
+    *    /me/playlists/*      — create / view / edit playlists
+    *    /me/history          — recently-played history
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import auth, db, download, likes, oauth as ytoauth, stream, ytm
+from . import auth, db, download, history, likes, playlists, stream, ytm
 from .config import settings
 
 app = FastAPI(title="MusicApp Backend", version="0.2.0")
@@ -85,52 +86,7 @@ def login(body: auth.LoginIn) -> auth.TokenOut:
 
 @app.get("/me", response_model=auth.UserOut)
 def me(user: Annotated[dict, Depends(auth.get_current_user)]) -> auth.UserOut:
-    return auth.UserOut(
-        id=user["id"],
-        email=user["email"],
-        has_youtube=ytm.user_has_youtube(user["id"]),
-    )
-
-
-@app.post("/me/link-youtube")
-def link_youtube(
-    user: Annotated[dict, Depends(auth.get_current_user)],
-    payload: Annotated[dict, Body(..., examples=[{"raw": "curl '...' -H 'cookie: ...'"}])],
-) -> dict:
-    """Legacy cURL-paste fallback. Prefer /me/yt-oauth/start instead."""
-    raw = (payload.get("raw") or "").strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Provide JSON body: { raw: '<cURL or headers>' }")
-    ytm.save_user_youtube_browser_auth(user["id"], raw)
-    return {"ok": True, "has_youtube": True}
-
-
-@app.delete("/me/link-youtube")
-def unlink_youtube(user: Annotated[dict, Depends(auth.get_current_user)]) -> dict:
-    """Forget this user's YT Music auth (works for both OAuth and browser)."""
-    ytm.delete_user_yt_auth(user["id"])
-    ytoauth.cancel(user["id"])
-    return {"ok": True}
-
-
-# ---------- OAuth device flow (Sign in with Google) ----------
-
-@app.get("/me/yt-oauth/config")
-def yt_oauth_config() -> dict:
-    """Public probe — does this server have Google OAuth configured?"""
-    return {"configured": ytoauth.is_configured()}
-
-
-@app.post("/me/yt-oauth/start")
-def yt_oauth_start(user: Annotated[dict, Depends(auth.get_current_user)]) -> dict:
-    """Begin device flow. Returns {verification_url, user_code, interval, expires_in}."""
-    return ytoauth.start_device_flow(user["id"])
-
-
-@app.post("/me/yt-oauth/poll")
-def yt_oauth_poll(user: Annotated[dict, Depends(auth.get_current_user)]) -> dict:
-    """Poll for completion. Returns {status: pending|success|denied|expired|error}."""
-    return ytoauth.poll_device_flow(user["id"])
+    return auth.UserOut(id=user["id"], email=user["email"])
 
 
 # ---------- Public: search & browse ----------
@@ -202,14 +158,8 @@ def lyrics(video_id: str) -> dict | None:
 
 
 @app.get("/home")
-def home(
-    user: Annotated[dict | None, Depends(auth.get_optional_user)] = None,
-    limit: int = Query(5, ge=1, le=20),
-) -> list[dict]:
-    """If the caller is logged in and has linked YT Music, returns their
-    personalized home. Otherwise falls back to the guest client."""
-    if user and ytm.user_has_youtube(user["id"]):
-        return ytm.client_for_user(user["id"]).get_home(limit=limit)
+def home(limit: int = Query(5, ge=1, le=20)) -> list[dict]:
+    """Guest home feed (public, same for everyone)."""
     return ytm.get_home(limit=limit)
 
 
@@ -218,22 +168,12 @@ def charts(country: str = "ZZ") -> dict:
     return ytm.get_charts(country=country)
 
 
-# ---------- Library (per-user) ----------
+# ---------- Liked songs (local) ----------
 
-@app.get("/library/playlists")
-def library_playlists(
-    user: Annotated[dict, Depends(auth.get_current_user)],
-    limit: int = Query(25, ge=1, le=100),
-) -> list[dict]:
-    return ytm.client_for_user(user["id"]).get_library_playlists(limit=limit)
-
-
-@app.get("/library/songs")
-def library_songs(
-    user: Annotated[dict, Depends(auth.get_current_user)],
-    limit: int = Query(100, ge=1, le=500),
-) -> list[dict]:
-    return ytm.client_for_user(user["id"]).get_library_songs(limit=limit)
+class LikeIn(BaseModel):
+    title: str
+    artists: str = ""
+    thumb_url: str = ""
 
 
 @app.get("/library/liked")
@@ -241,16 +181,8 @@ def library_liked(
     user: Annotated[dict, Depends(auth.get_current_user)],
     limit: int = Query(200, ge=1, le=500),
 ) -> dict:
-    """Liked songs from our local store (works even without YT linked)."""
+    """Liked songs from our local store."""
     return {"tracks": likes.list_for_user(user["id"], limit=limit)}
-
-
-# ---------- Likes (local, mirrored to YT when linked) ----------
-
-class LikeIn(BaseModel):
-    title: str
-    artists: str = ""
-    thumb_url: str = ""
 
 
 @app.get("/me/likes/{video_id}")
@@ -280,18 +212,110 @@ def like_delete(
     return {"liked": False}
 
 
-@app.get("/library/history")
-def library_history(user: Annotated[dict, Depends(auth.get_current_user)]) -> list[dict]:
-    return ytm.client_for_user(user["id"]).get_history()
+# ---------- Playlists (local, per-user) ----------
+
+class PlaylistIn(BaseModel):
+    name: str
 
 
-@app.post("/song/{video_id}/rate")
-def rate(
+class PlaylistItemIn(BaseModel):
+    title: str
+    artists: str = ""
+    thumb_url: str = ""
+
+
+@app.get("/me/playlists")
+def playlists_list(user: Annotated[dict, Depends(auth.get_current_user)]) -> list[dict]:
+    return playlists.list_playlists(user["id"])
+
+
+@app.post("/me/playlists")
+def playlists_create(
+    body: PlaylistIn,
+    user: Annotated[dict, Depends(auth.get_current_user)],
+) -> dict:
+    return playlists.create_playlist(user["id"], body.name)
+
+
+@app.get("/me/playlists/{playlist_id}")
+def playlists_get(
+    playlist_id: int,
+    user: Annotated[dict, Depends(auth.get_current_user)],
+) -> dict:
+    return playlists.get_playlist(user["id"], playlist_id)
+
+
+@app.patch("/me/playlists/{playlist_id}")
+def playlists_rename(
+    playlist_id: int,
+    body: PlaylistIn,
+    user: Annotated[dict, Depends(auth.get_current_user)],
+) -> dict:
+    return playlists.rename_playlist(user["id"], playlist_id, body.name)
+
+
+@app.delete("/me/playlists/{playlist_id}")
+def playlists_delete(
+    playlist_id: int,
+    user: Annotated[dict, Depends(auth.get_current_user)],
+) -> dict:
+    playlists.delete_playlist(user["id"], playlist_id)
+    return {"ok": True}
+
+
+@app.put("/me/playlists/{playlist_id}/items/{video_id}")
+def playlists_add_item(
+    playlist_id: int,
+    video_id: str,
+    body: PlaylistItemIn,
+    user: Annotated[dict, Depends(auth.get_current_user)],
+) -> dict:
+    playlists.add_item(
+        user["id"], playlist_id, video_id, body.title, body.artists, body.thumb_url
+    )
+    return {"ok": True}
+
+
+@app.delete("/me/playlists/{playlist_id}/items/{video_id}")
+def playlists_remove_item(
+    playlist_id: int,
     video_id: str,
     user: Annotated[dict, Depends(auth.get_current_user)],
-    rating: str = Query(..., pattern="^(LIKE|DISLIKE|INDIFFERENT)$"),
-):
-    return ytm.client_for_user(user["id"]).rate_song(video_id, rating)
+) -> dict:
+    playlists.remove_item(user["id"], playlist_id, video_id)
+    return {"ok": True}
+
+
+# ---------- Play history (local, per-user) ----------
+
+class HistoryIn(BaseModel):
+    title: str
+    artists: str = ""
+    thumb_url: str = ""
+
+
+@app.get("/me/history")
+def history_list(
+    user: Annotated[dict, Depends(auth.get_current_user)],
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    return {"tracks": history.list_for_user(user["id"], limit=limit)}
+
+
+@app.post("/me/history/{video_id}")
+def history_record(
+    video_id: str,
+    body: HistoryIn,
+    user: Annotated[dict, Depends(auth.get_current_user)],
+) -> dict:
+    history.record(user["id"], video_id, body.title, body.artists, body.thumb_url)
+    return {"ok": True}
+
+
+@app.delete("/me/history")
+def history_clear(user: Annotated[dict, Depends(auth.get_current_user)]) -> dict:
+    history.clear(user["id"])
+    return {"ok": True}
 
 
 # ---------- Stream ----------
