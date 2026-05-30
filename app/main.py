@@ -330,6 +330,13 @@ def stream_info(video_id: str, fresh: bool = False) -> dict:
         raise HTTPException(status_code=502, detail=f"Stream resolution failed: {e}") from e
 
 
+@app.get("/debug/formats/{video_id}")
+def debug_formats(video_id: str) -> dict:
+    """TEMP diagnostic — lists the audio formats each client strategy sees on
+    this server's IP (helps debug datacenter SABR/format issues)."""
+    return stream.debug_formats(video_id)
+
+
 @app.get("/stream/{video_id}/redirect")
 def stream_redirect(video_id: str):
     try:

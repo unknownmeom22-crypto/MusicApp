@@ -122,6 +122,38 @@ def _extract(video_id: str) -> dict[str, Any]:
     raise last_err or RuntimeError(f"No playable format for {video_id}")
 
 
+def debug_formats(video_id: str) -> dict[str, Any]:
+    """Diagnostic: for each client strategy, list the AUDIO formats yt-dlp sees
+    and whether they carry a direct URL. process=False so format-selection
+    errors don't hide the list. Tells us if this IP gets URL-less/SABR formats."""
+    url = f"https://music.youtube.com/watch?v={video_id}"
+    out: dict[str, Any] = {"has_cookies": bool(_cookies_source())}
+    for clients in _CLIENT_STRATEGIES:
+        key = ",".join(clients)
+        try:
+            opts = _ydl_opts(player_client=clients)
+            opts.pop("format", None)
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False, process=False)
+            fmts = list((info or {}).get("formats") or [])
+            audio = [
+                {
+                    "id": f.get("format_id"),
+                    "ext": f.get("ext"),
+                    "acodec": f.get("acodec"),
+                    "abr": f.get("abr"),
+                    "proto": f.get("protocol"),
+                    "has_url": bool(f.get("url")),
+                }
+                for f in fmts
+                if f.get("acodec") and f.get("acodec") != "none"
+            ]
+            out[key] = {"n_total": len(fmts), "n_audio": len(audio), "audio": audio[:8]}
+        except Exception as e:  # noqa: BLE001
+            out[key] = {"error": str(e)[:240]}
+    return out
+
+
 _CACHE_FIELDS = ("url", "content_type", "duration", "title", "codec", "bitrate_kbps")
 
 
