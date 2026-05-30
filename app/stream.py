@@ -10,6 +10,8 @@ so we use a TTL.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import time
 from typing import Any
 
@@ -22,21 +24,39 @@ from .config import settings
 # Fields match _CACHE_FIELDS below (url, content_type, duration, title, codec, bitrate).
 _cache: dict[str, tuple[Any, ...]] = {}
 
+# yt-dlp writes the cookie jar back to the cookiefile after each run, so it must
+# be writable. Render Secret Files (/etc/secrets/*) are read-only, so we work off
+# a copy seeded into tmp. Re-seeded on container restart (which Render does when
+# the secret changes), so updating the cookies just means redeploying.
+_WRITABLE_COOKIES = os.path.join(tempfile.gettempdir(), "ytdlp-cookies.txt")
 
-def _cookies_path() -> str | None:
-    """Pick a usable cookies file path, or None if we have to fly blind."""
-    # 1. Explicit override via settings/env
+
+def _cookies_source() -> str | None:
+    """Locate the cookies file (may be read-only), or None if we fly blind."""
     if settings.yt_cookies_file and os.path.exists(settings.yt_cookies_file):
         return settings.yt_cookies_file
-    # 2. Render Secret Files default mount point
-    p = "/etc/secrets/cookies.txt"
-    if os.path.exists(p):
-        return p
-    # 3. Local convention
-    p = "cookies.txt"
-    if os.path.exists(p):
-        return p
+    if os.path.exists("/etc/secrets/cookies.txt"):  # Render Secret Files mount
+        return "/etc/secrets/cookies.txt"
+    if os.path.exists("cookies.txt"):  # local convention
+        return "cookies.txt"
     return None
+
+
+def _cookies_path() -> str | None:
+    """Return a WRITABLE cookies file path for yt-dlp, or None if we have none."""
+    src = _cookies_source()
+    if not src:
+        return None
+    try:
+        # Seed the writable copy once; thereafter let yt-dlp read+write it so
+        # refreshed cookies persist for the container's lifetime.
+        if not os.path.exists(_WRITABLE_COOKIES):
+            shutil.copyfile(src, _WRITABLE_COOKIES)
+        return _WRITABLE_COOKIES
+    except OSError:
+        # Copy failed — fall back to the source (read-only writes may still warn,
+        # but reading the cookies is what matters most).
+        return src
 
 
 def _ydl_opts(extra: dict[str, Any] | None = None) -> dict[str, Any]:
